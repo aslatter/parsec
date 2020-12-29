@@ -30,6 +30,10 @@ module Text.Parsec.Token
     ) where
 
 import Data.Char ( isAlpha, toLower, toUpper, isSpace, digitToInt )
+#if __GLASGOW_HASKELL__ < 710
+import Control.Applicative((<*), (<*>), (*>))
+import Data.Functor((<$), (<$>))
+#endif
 #if MIN_VERSION_base(4,7,0)
 import Data.Typeable ( Typeable )
 #endif
@@ -438,16 +442,16 @@ makeTokenParser languageDef
                         }
                       <?> "literal string")
 
-    stringChar      =   do{ c <- stringLetter; return (Just c) }
+    stringChar      =   Just <$> stringLetter
                     <|> stringEscape
                     <?> "string character"
 
     stringLetter    = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
 
     stringEscape    = do{ _ <- char '\\'
-                        ;     do{ _ <- escapeGap  ; return Nothing }
-                          <|> do{ _ <- escapeEmpty; return Nothing }
-                          <|> do{ esc <- escapeCode; return (Just esc) }
+                        ;     ( Nothing <$ escapeGap)
+                          <|> ( Nothing <$ escapeEmpty)
+                          <|> ( Just <$> escapeCode )
                         }
 
     escapeEmpty     = char '&'
@@ -484,7 +488,7 @@ makeTokenParser languageDef
 
 
     -- escape code tables
-    escMap          = zip ("abfnrtv\\\"\'") ("\a\b\f\n\r\t\v\\\"\'")
+    escMap          = zip "abfnrtv\\\"\'" "\a\b\f\n\r\t\v\\\"\'"
     asciiMap        = zip (ascii3codes ++ ascii2codes) (ascii3 ++ ascii2)
 
     ascii2codes     = ["BS","HT","LF","VT","FF","CR","SO","SI","EM",
@@ -503,7 +507,7 @@ makeTokenParser languageDef
     -----------------------------------------------------------
     -- Numbers
     -----------------------------------------------------------
-    naturalOrFloat  = lexeme (natFloat) <?> "number"
+    naturalOrFloat  = lexeme natFloat   <?> "number"
 
     float           = lexeme floating   <?> "float"
     integer         = lexeme int        <?> "integer"
@@ -567,12 +571,11 @@ makeTokenParser languageDef
 
     -- integers and naturals
     int             = do{ f <- lexeme sign
-                        ; n <- nat
-                        ; return (f n)
+                        ; f <$> nat
                         }
 
-    sign            =   (char '-' >> return negate)
-                    <|> (char '+' >> return id)
+    sign            =   (negate <$ char '-')
+                    <|> (id <$ char '+')
                     <|> return id
 
     nat             = zeroNumber <|> decimal
@@ -604,16 +607,12 @@ makeTokenParser languageDef
     operator =
         lexeme $ try $
         do{ name <- oper
-          ; if (isReservedOp name)
+          ; if isReservedOp name
              then unexpected ("reserved operator " ++ show name)
              else return name
           }
 
-    oper =
-        do{ c <- (opStart languageDef)
-          ; cs <- many (opLetter languageDef)
-          ; return (c:cs)
-          }
+    oper = (:) <$> opStart languageDef <*> many (opLetter languageDef)
         <?> "operator"
 
     isReservedOp name =
@@ -631,7 +630,7 @@ makeTokenParser languageDef
 
     caseString name
         | caseSensitive languageDef  = string name
-        | otherwise               = do{ walk name; return name }
+        | otherwise               = name <$ walk name
         where
           walk []     = return ()
           walk (c:cs) = do{ _ <- caseChar c <?> msg; walk cs }
@@ -645,18 +644,13 @@ makeTokenParser languageDef
     identifier =
         lexeme $ try $
         do{ name <- ident
-          ; if (isReservedName name)
+          ; if isReservedName name
              then unexpected ("reserved word " ++ show name)
              else return name
           }
 
 
-    ident
-        = do{ c <- identStart languageDef
-            ; cs <- many (identLetter languageDef)
-            ; return (c:cs)
-            }
-        <?> "identifier"
+    ident = ((:) <$> identStart languageDef <*> many (identLetter languageDef)) <?> "identifier"
 
     isReservedName name
         = isReserved theReservedNames caseName
@@ -669,7 +663,7 @@ makeTokenParser languageDef
         = scan names
         where
           scan []       = False
-          scan (r:rs)   = case (compare r name) of
+          scan (r:rs)   = case compare r name of
                             LT  -> scan rs
                             EQ  -> True
                             GT  -> False
@@ -688,8 +682,7 @@ makeTokenParser languageDef
     symbol name
         = lexeme (string name)
 
-    lexeme p
-        = do{ x <- p; whiteSpace; return x  }
+    lexeme p = p <* whiteSpace
 
 
     --whiteSpace
@@ -722,7 +715,7 @@ makeTokenParser languageDef
         | otherwise                = inCommentSingle
 
     inCommentMulti
-        =   do{ _ <- try (string (commentEnd languageDef)) ; return () }
+        =   (() <$ try (string (commentEnd languageDef)))
         <|> do{ multiLineComment                     ; inCommentMulti }
         <|> do{ skipMany1 (noneOf startEnd)          ; inCommentMulti }
         <|> do{ _ <- oneOf startEnd                  ; inCommentMulti }
@@ -731,7 +724,7 @@ makeTokenParser languageDef
           startEnd   = nub (commentEnd languageDef ++ commentStart languageDef)
 
     inCommentSingle
-        =   do{ _ <- try (string (commentEnd languageDef)); return () }
+        =   (() <$ try (string (commentEnd languageDef)))
         <|> do{ skipMany1 (noneOf startEnd)         ; inCommentSingle }
         <|> do{ _ <- oneOf startEnd                 ; inCommentSingle }
         <?> "end of comment"
